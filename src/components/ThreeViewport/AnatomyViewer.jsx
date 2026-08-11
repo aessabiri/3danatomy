@@ -168,7 +168,7 @@ export default function AnatomyViewer({
     // 7. TransformControls (Direct Bone Rotation Gizmo)
     const transformControls = new TransformControls(camera, renderer.domElement);
     transformControls.setMode('rotate');
-    transformControls.size = 0.85;
+    transformControls.size = 0.55;
     transformControls.space = 'local';
     scene.add(transformControls);
     transformControlsRef.current = transformControls;
