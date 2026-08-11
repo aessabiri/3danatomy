@@ -25,10 +25,10 @@ export default function BiomechanicalAnalysisHUD({
       className="glass-panel"
       style={{
         position: 'absolute',
-        top: '16px',
-        left: '16px',
+        top: '14px',
+        left: '14px',
         width: isExpanded ? '300px' : 'auto',
-        borderRadius: 'var(--radius-full)',
+        borderRadius: isExpanded ? 'var(--radius-lg)' : 'var(--radius-full)',
         border: '1px solid rgba(56, 189, 248, 0.35)',
         boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)',
         zIndex: 25,

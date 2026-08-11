@@ -1,15 +1,32 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { RealisticAnatomyEngine } from './RealisticAnatomyLoader';
 import BiomechanicalAnalysisHUD from '../UI/BiomechanicalAnalysisHUD';
-import { Camera, Maximize2, RotateCcw, Eye, Layers, Zap, Info, Loader2, Sparkles } from 'lucide-react';
+import {
+  Camera,
+  RotateCcw,
+  Zap,
+  Info,
+  Loader2,
+  Move3d,
+  Disc,
+  Footprints,
+  Maximize2,
+  RefreshCw,
+  Plus,
+  Minus,
+  CheckCircle2,
+  ChevronRight
+} from 'lucide-react';
 
 /**
- * Hyper-Realistic 3D Anatomy Viewport Component
+ * Hyper-Realistic 3D Anatomy Viewport Component with Direct On-Canvas Bone Rotation Controls
  */
 export default function AnatomyViewer({
   postureParams,
+  onParamChange = null,
   overactiveMuscles = [],
   underactiveMuscles = [],
   displayMode = 'all',
@@ -17,7 +34,7 @@ export default function AnatomyViewer({
   cameraView = 'front',
   onSelectAnatomy = null,
   modelType = 'full_atlas',
-  vertexRatio = 0.5,
+  vertexRatio = 1.0,
   pixelRatioScale = 1.0,
   shadowsEnabled = true,
   onStatsUpdate = null,
@@ -28,15 +45,39 @@ export default function AnatomyViewer({
   const cameraRef = useRef(null);
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
+  const transformControlsRef = useRef(null);
   const animationFrameRef = useRef(null);
   const hoveredObjectRef = useRef(null);
 
+  // Joint proxy nodes map for TransformControls attachment
+  const jointProxiesRef = useRef({});
+
+  const [activeJointKey, setActiveJointKey] = useState('pelvis');
+  const [showTransformGizmo, setShowTransformGizmo] = useState(true);
   const [hoveredTag, setHoveredTag] = useState(null);
   const [loadState, setLoadState] = useState({ progress: 0, status: 'Initializing 3D Medical Engine...', ready: false });
   const [showVectors, setShowVectors] = useState(true);
 
+  // Joint definitions for on-canvas bone rotation
+  const jointDefinitions = [
+    { key: 'pelvis', label: 'Pelvic Girdle (ASIS / Sacrum)', icon: Disc, pos: new THREE.Vector3(0, 0.0, 0) },
+    { key: 'right_tibia', label: 'Right Tibia (Shin Torsion)', icon: Disc, pos: new THREE.Vector3(0.08, -0.62, 0.01) },
+    { key: 'right_foot', label: 'Right Foot Arch (Subtalar)', icon: Footprints, pos: new THREE.Vector3(0.09, -0.88, 0.05) },
+    { key: 'right_femur', label: 'Right Femur & Knee (Valgus)', icon: Disc, pos: new THREE.Vector3(0.10, -0.42, 0) },
+    { key: 'lumbar', label: 'Lumbar Spine (L1–L5)', icon: Disc, pos: new THREE.Vector3(0, 0.16, -0.02) },
+    { key: 'thoracic', label: 'Thoracic Spine (Kyphosis)', icon: Disc, pos: new THREE.Vector3(0, 0.38, -0.04) },
+    { key: 'cervical', label: 'Cervical & Head (FHP)', icon: Disc, pos: new THREE.Vector3(0, 0.65, 0.02) },
+    { key: 'mandible', label: 'Mandible (Jaw Retraction)', icon: Disc, pos: new THREE.Vector3(0, 0.68, 0.06) },
+    { key: 'left_tibia', label: 'Left Tibia (Shin)', icon: Disc, pos: new THREE.Vector3(-0.08, -0.62, 0.01) },
+    { key: 'left_foot', label: 'Left Foot (Arch)', icon: Footprints, pos: new THREE.Vector3(-0.09, -0.88, 0.05) },
+  ];
+
+  // Helper to convert rad/deg
+  const radToDeg = (r) => Math.round((r || 0) * (180 / Math.PI));
+  const degToRad = (d) => d * (Math.PI / 180);
+
   // ==========================================
-  // 1. INITIALIZE THREE.JS & REALISTIC ANATOMY
+  // 1. INITIALIZE THREE.JS, SCENE & TRANSFORM CONTROLS
   // ==========================================
   useEffect(() => {
     const container = containerRef.current;
@@ -48,14 +89,14 @@ export default function AnatomyViewer({
     scene.fog = new THREE.FogExp2(0x06080d, 0.05);
     sceneRef.current = scene;
 
-    // CAMERA (Calibrated for full human standing figure)
+    // CAMERA (Calibrated for full standing human figure)
     const width = container.clientWidth || 800;
     const height = container.clientHeight || 600;
     const camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 50);
     camera.position.set(0, 0.05, 2.7);
     cameraRef.current = camera;
 
-    // RENDERER (PBR Studio Pipeline)
+    // RENDERER
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: 'high-performance',
@@ -77,13 +118,74 @@ export default function AnatomyViewer({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
-    controls.target.set(0, 0.0, 0); // Focus at center of gravity
+    controls.target.set(0, 0.0, 0);
     controls.minDistance = 0.5;
     controls.maxDistance = 6.5;
     controls.maxPolarAngle = Math.PI / 2 + 0.12;
     controlsRef.current = controls;
 
-    // MEDICAL STUDIO LIGHTING RIG
+    // TRANSFORM CONTROLS (Direct On-Canvas Bone Rotation Gizmo)
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setMode('rotate');
+    transformControls.size = 0.85;
+    transformControls.space = 'local';
+    scene.add(transformControls);
+    transformControlsRef.current = transformControls;
+
+    // Disable OrbitControls while dragging gizmo
+    transformControls.addEventListener('dragging-changed', (event) => {
+      controls.enabled = !event.value;
+    });
+
+    // Create Joint Proxy Objects in 3D Scene
+    const proxyGroup = new THREE.Group();
+    proxyGroup.name = 'JointRotationProxies';
+    scene.add(proxyGroup);
+
+    jointDefinitions.forEach((def) => {
+      const proxy = new THREE.Group();
+      proxy.name = `proxy_${def.key}`;
+      proxy.position.copy(def.pos);
+      proxyGroup.add(proxy);
+      jointProxiesRef.current[def.key] = proxy;
+    });
+
+    // Handle TransformControls Change -> map back to Posture Parameters
+    transformControls.addEventListener('change', () => {
+      const currentAttached = transformControls.object;
+      if (!currentAttached || !onParamChange) return;
+
+      const jointKey = currentAttached.name.replace('proxy_', '');
+      const rot = currentAttached.rotation;
+
+      if (jointKey === 'pelvis') {
+        onParamChange('pelvisTilt', rot.x);
+        onParamChange('pelvisDrop', rot.z);
+        onParamChange('pelvisRotation', rot.y);
+      } else if (jointKey === 'right_foot') {
+        onParamChange('rightFootPronation', rot.z);
+      } else if (jointKey === 'right_tibia') {
+        onParamChange('rightFootPronation', rot.y);
+        onParamChange('rightKneeValgus', rot.z);
+      } else if (jointKey === 'right_femur') {
+        onParamChange('rightKneeValgus', -rot.z);
+      } else if (jointKey === 'lumbar') {
+        onParamChange('lumbarLordosis', -rot.x);
+        onParamChange('spinalLateralBend', rot.z);
+      } else if (jointKey === 'thoracic') {
+        onParamChange('thoracicKyphosis', rot.x);
+        onParamChange('spinalLateralBend', rot.z);
+      } else if (jointKey === 'cervical' || jointKey === 'mandible') {
+        onParamChange('cervicalForwardHead', Math.max(0, rot.x * 0.1));
+      }
+    });
+
+    // Attach initial gizmo to pelvis proxy
+    if (jointProxiesRef.current.pelvis) {
+      transformControls.attach(jointProxiesRef.current.pelvis);
+    }
+
+    // LIGHTING
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x0f172a, 1.0);
     scene.add(hemiLight);
 
@@ -92,7 +194,6 @@ export default function AnatomyViewer({
     keyLight.castShadow = shadowsEnabled;
     keyLight.shadow.mapSize.width = 1024;
     keyLight.shadow.mapSize.height = 1024;
-    keyLight.shadow.bias = -0.0001;
     scene.add(keyLight);
 
     const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.9);
@@ -122,7 +223,7 @@ export default function AnatomyViewer({
     shadowPlane.receiveShadow = shadowsEnabled;
     scene.add(shadowPlane);
 
-    // INSTANTIATE REALISTIC ANATOMY ENGINE
+    // REALISTIC ANATOMY ENGINE INSTANCE
     const engine = new RealisticAnatomyEngine(
       scene,
       (progress, status) => {
@@ -181,12 +282,25 @@ export default function AnatomyViewer({
 
     const handleClick = () => {
       if (!engine.isReady) return;
-      if (hoveredObjectRef.current && onSelectAnatomy) {
+      if (hoveredObjectRef.current) {
         const { anatomyKey, labelName } = hoveredObjectRef.current.userData;
-        onSelectAnatomy({
-          key: anatomyKey,
-          label: labelName,
-        });
+
+        // Auto-select corresponding bone joint for rotation
+        if (anatomyKey.includes('tibialis') || anatomyKey.includes('tibia')) {
+          handleSelectJoint('right_tibia');
+        } else if (anatomyKey.includes('lumbar')) {
+          handleSelectJoint('lumbar');
+        } else if (anatomyKey.includes('thoracic')) {
+          handleSelectJoint('thoracic');
+        } else if (anatomyKey.includes('cervical')) {
+          handleSelectJoint('cervical');
+        } else if (anatomyKey.includes('pelvis') || anatomyKey.includes('gluteus')) {
+          handleSelectJoint('pelvis');
+        }
+
+        if (onSelectAnatomy) {
+          onSelectAnatomy({ key: anatomyKey, label: labelName });
+        }
       }
     };
 
@@ -213,6 +327,7 @@ export default function AnatomyViewer({
       renderer.domElement.removeEventListener('mousemove', handleMouseMove);
       renderer.domElement.removeEventListener('click', handleClick);
       controls.dispose();
+      transformControls.dispose();
       engine.dispose();
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
@@ -221,24 +336,107 @@ export default function AnatomyViewer({
     };
   }, []);
 
-  // ==========================================
-  // 2. REACTIVE UPDATES: POSTURE KINEMATICS & MODEL SWITCHING
-  // ==========================================
+  // Handle active joint selection and attach TransformControls
+  const handleSelectJoint = (jointKey) => {
+    setActiveJointKey(jointKey);
+    const proxy = jointProxiesRef.current[jointKey];
+    if (transformControlsRef.current && proxy) {
+      transformControlsRef.current.attach(proxy);
+      transformControlsRef.current.visible = showTransformGizmo;
+    }
+  };
+
+  // Direct On-Canvas Rotation Step Buttons (+5 / -5 degrees)
+  const handleStepRotate = (axis, deltaDeg) => {
+    const deltaRad = degToRad(deltaDeg);
+    const proxy = jointProxiesRef.current[activeJointKey];
+    if (!proxy || !onParamChange) return;
+
+    if (activeJointKey === 'pelvis') {
+      if (axis === 'pitch') onParamChange('pelvisTilt', (postureParams.pelvisTilt || 0) + deltaRad);
+      if (axis === 'roll') onParamChange('pelvisDrop', (postureParams.pelvisDrop || 0) + deltaRad);
+      if (axis === 'yaw') onParamChange('pelvisRotation', (postureParams.pelvisRotation || 0) + deltaRad);
+    } else if (activeJointKey === 'right_foot') {
+      if (axis === 'roll') onParamChange('rightFootPronation', (postureParams.rightFootPronation || 0) + deltaRad);
+    } else if (activeJointKey === 'right_tibia') {
+      if (axis === 'yaw') onParamChange('rightFootPronation', (postureParams.rightFootPronation || 0) + deltaRad);
+      if (axis === 'roll') onParamChange('rightKneeValgus', (postureParams.rightKneeValgus || 0) + deltaRad);
+    } else if (activeJointKey === 'lumbar') {
+      if (axis === 'pitch') onParamChange('lumbarLordosis', (postureParams.lumbarLordosis || 0) + deltaRad);
+      if (axis === 'roll') onParamChange('spinalLateralBend', (postureParams.spinalLateralBend || 0) + deltaRad);
+    } else if (activeJointKey === 'thoracic') {
+      if (axis === 'pitch') onParamChange('thoracicKyphosis', (postureParams.thoracicKyphosis || 0) + deltaRad);
+    } else if (activeJointKey === 'cervical' || activeJointKey === 'mandible') {
+      if (axis === 'pitch') onParamChange('cervicalForwardHead', Math.max(0, (postureParams.cervicalForwardHead || 0) + deltaDeg * 0.002));
+    }
+  };
+
+  // Reset selected joint
+  const handleResetJoint = () => {
+    const proxy = jointProxiesRef.current[activeJointKey];
+    if (proxy) proxy.rotation.set(0, 0, 0);
+
+    if (activeJointKey === 'pelvis') {
+      onParamChange('pelvisTilt', 0);
+      onParamChange('pelvisDrop', 0);
+      onParamChange('pelvisRotation', 0);
+    } else if (activeJointKey === 'right_foot') {
+      onParamChange('rightFootPronation', 0);
+    } else if (activeJointKey === 'right_tibia') {
+      onParamChange('rightKneeValgus', 0);
+      onParamChange('rightFootPronation', 0);
+    } else if (activeJointKey === 'lumbar') {
+      onParamChange('lumbarLordosis', 0);
+      onParamChange('spinalLateralBend', 0);
+    } else if (activeJointKey === 'thoracic') {
+      onParamChange('thoracicKyphosis', 0);
+    } else if (activeJointKey === 'cervical') {
+      onParamChange('cervicalForwardHead', 0);
+    }
+  };
+
+  // Keep proxy rotations in sync with postureParams
+  useEffect(() => {
+    const proxies = jointProxiesRef.current;
+    if (proxies.pelvis) {
+      proxies.pelvis.rotation.set(postureParams.pelvisTilt || 0, postureParams.pelvisRotation || 0, postureParams.pelvisDrop || 0);
+    }
+    if (proxies.right_foot) {
+      proxies.right_foot.rotation.set(0, 0, postureParams.rightFootPronation || 0);
+    }
+    if (proxies.right_tibia) {
+      proxies.right_tibia.rotation.set(0, -(postureParams.rightFootPronation || 0), postureParams.rightKneeValgus || 0);
+    }
+    if (proxies.lumbar) {
+      proxies.lumbar.rotation.set(-(postureParams.lumbarLordosis || 0), 0, -(postureParams.spinalLateralBend || 0));
+    }
+    if (proxies.thoracic) {
+      proxies.thoracic.rotation.set(postureParams.thoracicKyphosis || 0, 0, postureParams.spinalLateralBend || 0);
+    }
+  }, [postureParams]);
+
+  // Toggle gizmo visibility
+  useEffect(() => {
+    if (transformControlsRef.current) {
+      transformControlsRef.current.visible = showTransformGizmo;
+    }
+  }, [showTransformGizmo]);
+
+  // Reactive Model Switching
   useEffect(() => {
     if (engineRef.current && engineRef.current.isReady) {
       engineRef.current.switchModel(modelType);
     }
   }, [modelType]);
 
+  // Reactive Posture Update
   useEffect(() => {
     if (engineRef.current && postureParams) {
       engineRef.current.updatePosture(postureParams);
     }
   }, [postureParams]);
 
-  // ==========================================
-  // 3. REACTIVE UPDATES: VERTEX RESOLUTION & GPU SCALING
-  // ==========================================
+  // Reactive Vertex Decimation
   useEffect(() => {
     if (engineRef.current && engineRef.current.isReady) {
       const stats = engineRef.current.setVertexResolution(vertexRatio);
@@ -246,151 +444,77 @@ export default function AnatomyViewer({
     }
   }, [vertexRatio]);
 
+  // Reactive Pixel Ratio
   useEffect(() => {
     if (rendererRef.current) {
       rendererRef.current.setPixelRatio(pixelRatioScale);
     }
   }, [pixelRatioScale]);
 
-  useEffect(() => {
-    if (rendererRef.current) {
-      rendererRef.current.shadowMap.enabled = shadowsEnabled;
-    }
-  }, [shadowsEnabled]);
-
-  // ==========================================
-  // 4. REACTIVE UPDATES: MUSCLE HEATMAP
-  // ==========================================
-  useEffect(() => {
-    if (engineRef.current) {
-      engineRef.current.updateMuscleHeatmap(overactiveMuscles, underactiveMuscles);
-    }
-  }, [overactiveMuscles, underactiveMuscles]);
-
-  // ==========================================
-  // 5. REACTIVE UPDATES: DISPLAY MODE
-  // ==========================================
+  // Reactive Display Mode
   useEffect(() => {
     if (engineRef.current) {
       engineRef.current.setDisplayMode(displayMode);
-      engineRef.current.updateMuscleHeatmap(overactiveMuscles, underactiveMuscles);
     }
-  }, [displayMode, overactiveMuscles, underactiveMuscles]);
+  }, [displayMode]);
 
-  // ==========================================
-  // 6. REACTIVE UPDATES: PLUMB LINE & 3D VECTORS
-  // ==========================================
-  useEffect(() => {
-    if (engineRef.current && engineRef.current.plumbLineGroup) {
-      engineRef.current.plumbLineGroup.visible = showPlumbLine;
+  // Camera preset handler
+  const setCameraPreset = (viewName) => {
+    if (!controlsRef.current || !cameraRef.current) return;
+    const controls = controlsRef.current;
+    const camera = cameraRef.current;
+
+    if (viewName === 'front') {
+      camera.position.set(0, 0.05, 2.7);
+      controls.target.set(0, 0.0, 0);
+    } else if (viewName === 'side') {
+      camera.position.set(2.6, 0.05, 0.2);
+      controls.target.set(0, 0.0, 0);
+    } else if (viewName === 'pelvis') {
+      camera.position.set(0, 0.1, 1.3);
+      controls.target.set(0, 0.0, 0);
+    } else if (viewName === 'right_knee') {
+      camera.position.set(0.25, -0.45, 1.1);
+      controls.target.set(0.1, -0.5, 0);
+    } else if (viewName === 'right_foot') {
+      camera.position.set(0.2, -0.75, 0.7);
+      controls.target.set(0.09, -0.85, 0.05);
+    } else if (viewName === 'jaw') {
+      camera.position.set(0.45, 0.65, 0.8);
+      controls.target.set(0, 0.62, 0.04);
     }
-  }, [showPlumbLine]);
+    controls.update();
+  };
 
-  useEffect(() => {
-    if (engineRef.current && engineRef.current.overlays) {
-      engineRef.current.overlays.setVisible(showVectors);
-    }
-  }, [showVectors]);
-
-  // ==========================================
-  // 6. CAMERA PRESETS & POSITIONING
-  // ==========================================
-  const setCameraPreset = useCallback((preset) => {
-    if (!cameraRef.current || !controlsRef.current) return;
-    const cam = cameraRef.current;
-    const ctrl = controlsRef.current;
-
-    switch (preset) {
-      case 'front':
-        cam.position.set(0, 0.05, 2.7);
-        ctrl.target.set(0, 0.0, 0);
-        break;
-      case 'side':
-        cam.position.set(2.7, 0.05, 0);
-        ctrl.target.set(0, 0.0, 0);
-        break;
-      case 'back':
-        cam.position.set(0, 0.05, -2.7);
-        ctrl.target.set(0, 0.0, 0);
-        break;
-      case 'pelvis':
-        cam.position.set(0.5, 0.02, 1.15);
-        ctrl.target.set(0, 0.0, 0);
-        break;
-      case 'spine':
-        cam.position.set(1.2, 0.25, 0.85);
-        ctrl.target.set(0, 0.25, 0);
-        break;
-      case 'feet':
-        cam.position.set(0.5, -0.65, 0.9);
-        ctrl.target.set(0, -0.75, 0);
-        break;
-      case 'left_knee':
-        cam.position.set(-0.45, -0.38, 0.85);
-        ctrl.target.set(-0.12, -0.42, 0);
-        break;
-      case 'left_foot':
-        cam.position.set(-0.35, -0.75, 0.75);
-        ctrl.target.set(-0.12, -0.85, 0.05);
-        break;
-      case 'right_foot':
-        cam.position.set(0.35, -0.75, 0.75);
-        ctrl.target.set(0.12, -0.85, 0.05);
-        break;
-      case 'right_knee':
-        cam.position.set(0.45, -0.38, 0.85);
-        ctrl.target.set(0.12, -0.42, 0);
-        break;
-      case 'jaw':
-        cam.position.set(0.32, 0.72, 0.62);
-        ctrl.target.set(0, 0.68, 0.04);
-        break;
-      default:
-        cam.position.set(0, 0.05, 2.7);
-        ctrl.target.set(0, 0.0, 0);
-    }
-    ctrl.update();
-  }, []);
-
-  useEffect(() => {
-    if (cameraView) {
-      setCameraPreset(cameraView);
-    }
-  }, [cameraView, setCameraPreset]);
-
-  // Capture High-Res Screenshot
   const handleCaptureScreenshot = () => {
     if (!rendererRef.current) return;
-    const dataURL = rendererRef.current.domElement.toDataURL('image/png');
+    const dataUrl = rendererRef.current.domElement.toDataURL('image/png');
     const link = document.createElement('a');
-    link.download = `BioAlign-Realistic-Anatomy-${Date.now()}.png`;
-    link.href = dataURL;
+    link.download = `BioAlign3D-${activeJointKey}-rotation.png`;
+    link.href = dataUrl;
     link.click();
   };
 
+  const activeJointDef = jointDefinitions.find((j) => j.key === activeJointKey) || jointDefinitions[0];
+
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
-      {/* Three.js Canvas */}
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-
-      {/* Live Biomechanical Telemetry HUD (Upper Left) */}
-      <BiomechanicalAnalysisHUD
-        postureParams={postureParams}
-        onToggleVectors={() => setShowVectors(!showVectors)}
-        showVectors={showVectors}
-      />
-
-      {/* Loading Progress Overlay */}
+    <div
+      ref={containerRef}
+      style={{
+        width: '100%',
+        height: '100%',
+        position: 'relative',
+        outline: 'none',
+        overflow: 'hidden',
+      }}
+    >
+      {/* Loading Overlay */}
       {!loadState.ready && (
         <div
           style={{
             position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            backgroundColor: 'rgba(6, 8, 13, 0.92)',
-            backdropFilter: 'blur(10px)',
+            inset: 0,
+            backgroundColor: '#06080d',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -400,8 +524,8 @@ export default function AnatomyViewer({
         >
           <div
             style={{
-              width: '54px',
-              height: '54px',
+              width: '56px',
+              height: '56px',
               borderRadius: '50%',
               background: 'linear-gradient(135deg, #0284c7 0%, #38bdf8 100%)',
               display: 'flex',
@@ -457,7 +581,115 @@ export default function AnatomyViewer({
         </div>
       )}
 
-      {/* Viewport Control Bar Overlay */}
+      {/* DIRECT ON-CANVAS BONE ROTATION CONTROLLER (Top Center Floating HUD) */}
+      <div
+        className="glass-panel"
+        style={{
+          position: 'absolute',
+          top: '16px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          padding: '8px 14px',
+          borderRadius: 'var(--radius-full)',
+          border: '1px solid rgba(56, 189, 248, 0.4)',
+          background: 'rgba(10, 15, 26, 0.92)',
+          boxShadow: '0 10px 30px rgba(0, 0, 0, 0.6)',
+          zIndex: 25,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Move3d size={16} color="var(--accent-cyan)" />
+          <span style={{ fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--accent-cyan)', letterSpacing: '0.05em' }}>
+            Rotate Bone:
+          </span>
+        </div>
+
+        {/* Joint Selector Dropdown */}
+        <select
+          value={activeJointKey}
+          onChange={(e) => handleSelectJoint(e.target.value)}
+          style={{
+            background: 'rgba(15, 23, 42, 0.9)',
+            color: '#f8fafc',
+            border: '1px solid var(--border-medium)',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            padding: '4px 8px',
+            outline: 'none',
+            cursor: 'pointer',
+          }}
+        >
+          {jointDefinitions.map((j) => (
+            <option key={j.key} value={j.key}>
+              {j.label}
+            </option>
+          ))}
+        </select>
+
+        {/* Quick Rotation Buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          {/* Pitch */}
+          <div style={{ display: 'flex', alignItems: 'center', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '4px', padding: '1px 4px' }}>
+            <span style={{ fontSize: '0.65rem', fontWeight: 800, color: '#f87171', marginRight: '3px' }}>PITCH</span>
+            <button onClick={() => handleStepRotate('pitch', -5)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '0 2px' }} title="Pitch -5°"><Minus size={11} /></button>
+            <button onClick={() => handleStepRotate('pitch', 5)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '0 2px' }} title="Pitch +5°"><Plus size={11} /></button>
+          </div>
+
+          {/* Roll */}
+          <div style={{ display: 'flex', alignItems: 'center', background: 'rgba(56, 189, 248, 0.15)', border: '1px solid rgba(56, 189, 248, 0.3)', borderRadius: '4px', padding: '1px 4px' }}>
+            <span style={{ fontSize: '0.65rem', fontWeight: 800, color: '#38bdf8', marginRight: '3px' }}>ROLL</span>
+            <button onClick={() => handleStepRotate('roll', -5)} style={{ background: 'none', border: 'none', color: '#38bdf8', cursor: 'pointer', padding: '0 2px' }} title="Roll -5°"><Minus size={11} /></button>
+            <button onClick={() => handleStepRotate('roll', 5)} style={{ background: 'none', border: 'none', color: '#38bdf8', cursor: 'pointer', padding: '0 2px' }} title="Roll +5°"><Plus size={11} /></button>
+          </div>
+
+          {/* Yaw */}
+          <div style={{ display: 'flex', alignItems: 'center', background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '4px', padding: '1px 4px' }}>
+            <span style={{ fontSize: '0.65rem', fontWeight: 800, color: '#fbbf24', marginRight: '3px' }}>YAW</span>
+            <button onClick={() => handleStepRotate('yaw', -5)} style={{ background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer', padding: '0 2px' }} title="Yaw -5°"><Minus size={11} /></button>
+            <button onClick={() => handleStepRotate('yaw', 5)} style={{ background: 'none', border: 'none', color: '#fbbf24', cursor: 'pointer', padding: '0 2px' }} title="Yaw +5°"><Plus size={11} /></button>
+          </div>
+        </div>
+
+        {/* Reset Joint Button */}
+        <button
+          onClick={handleResetJoint}
+          className="btn-secondary"
+          style={{ fontSize: '0.7rem', padding: '3px 8px', height: '22px' }}
+          title="Reset this bone to neutral"
+        >
+          <RotateCcw size={11} />
+          Reset
+        </button>
+
+        {/* 3D Gizmo Toggle */}
+        <button
+          onClick={() => setShowTransformGizmo(!showTransformGizmo)}
+          className={`btn-secondary ${showTransformGizmo ? 'active' : ''}`}
+          style={{ fontSize: '0.7rem', padding: '3px 8px', height: '22px' }}
+          title="Toggle 3D Rotation Gizmo on bone"
+        >
+          {showTransformGizmo ? 'Gizmo ON' : 'Gizmo OFF'}
+        </button>
+      </div>
+
+      {/* Live Biomechanical Telemetry HUD (Collapsible Pill) */}
+      <BiomechanicalAnalysisHUD
+        postureParams={postureParams}
+        showVectors={showVectors}
+        onToggleVectors={() => {
+          const next = !showVectors;
+          setShowVectors(next);
+          if (engineRef.current && engineRef.current.overlays) {
+            engineRef.current.overlays.setVisible(next);
+          }
+        }}
+      />
+
+      {/* Top Right Viewport Controls */}
       <div
         style={{
           position: 'absolute',
@@ -485,7 +717,7 @@ export default function AnatomyViewer({
         </button>
       </div>
 
-      {/* Quick Camera Angle Bar (Bottom Left of Canvas) */}
+      {/* Quick Camera Angle Bar (Bottom Center-Left) */}
       <div
         className="glass-panel"
         style={{
@@ -547,21 +779,6 @@ export default function AnatomyViewer({
         </button>
       </div>
 
-      {/* Live Biomechanical Telemetry HUD (Collapsible Pill) */}
-      <div style={{ position: 'absolute', top: '16px', left: '16px', zIndex: 20 }}>
-        <BiomechanicalAnalysisHUD
-          postureParams={postureParams}
-          showVectors={showVectors}
-          onToggleVectors={() => {
-            const next = !showVectors;
-            setShowVectors(next);
-            if (engineRef.current && engineRef.current.overlays) {
-              engineRef.current.overlays.setVisible(next);
-            }
-          }}
-        />
-      </div>
-
       {/* Anatomy Interaction Hint */}
       <div
         style={{
@@ -583,7 +800,7 @@ export default function AnatomyViewer({
         }}
       >
         <Info size={13} color="var(--accent-cyan)" />
-        Click any bone or muscle to inspect biomechanics
+        Click any bone or use the top rotation gizmo to articulate joints
       </div>
     </div>
   );

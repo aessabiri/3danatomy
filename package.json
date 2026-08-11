@@ -17,6 +17,8 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.1"
+    "puppeteer-core": "^24.43.1",
+    "vite": "^5.4.1",
+    "ws": "^8.21.3"
   }
 }

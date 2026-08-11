@@ -12,25 +12,25 @@ import { KineticChainSolver } from './utils/KineticChainSolver';
 import { Sliders, Activity, X } from 'lucide-react';
 
 export default function App() {
-  const [selectedConditionId, setSelectedConditionId] = useState('ayoub_case');
-  const [postureParams, setPostureParams] = useState(POSTURE_CONDITIONS.ayoub_case.parameters);
+  const [selectedConditionId, setSelectedConditionId] = useState('neutral');
+  const [postureParams, setPostureParams] = useState(POSTURE_CONDITIONS.neutral.parameters);
   const [kineticMode, setKineticMode] = useState('foot_ascending'); // 'foot_ascending' | 'pelvis_rooted' | 'manual'
   const [displayMode, setDisplayMode] = useState('all');
   const [showPlumbLine, setShowPlumbLine] = useState(true);
   const [cameraView, setCameraView] = useState('front');
   const [selectedAnatomy, setSelectedAnatomy] = useState(null);
   const [isExerciseModalOpen, setIsExerciseModalOpen] = useState(false);
-  const [isAyoubActive, setIsAyoubActive] = useState(true);
+  const [isAyoubActive, setIsAyoubActive] = useState(false); // Disabled by default
 
-  // Anatomical Model Atlas Selection
-  const [modelType, setModelType] = useState('full_atlas'); // 'full_atlas', 'lumc_skeleton', 'lumc_lower_limb'
+  // Anatomical Model Atlas Selection (Default to LUMC Clinical Skeleton for crisp university anatomy & 60 FPS)
+  const [modelType, setModelType] = useState('lumc_skeleton'); // 'lumc_skeleton', 'full_atlas', 'lumc_lower_limb'
 
-  // GPU & Vertex Decimation States (Default to Eco iGPU mode for low GPU load!)
-  const [vertexRatio, setVertexRatio] = useState(0.4); // 40% vertices by default (~50k vertices)
-  const [pixelRatioScale, setPixelRatioScale] = useState(0.9); // 0.9x resolution
-  const [shadowsEnabled, setShadowsEnabled] = useState(false); // Shadows off by default to save integrated GPU
+  // GPU & Vertex Decimation States (Default to 1.0 for 100% full crisp anatomical detail)
+  const [vertexRatio, setVertexRatio] = useState(1.0);
+  const [pixelRatioScale, setPixelRatioScale] = useState(1.0);
+  const [shadowsEnabled, setShadowsEnabled] = useState(true);
   const [isGPUModalOpen, setIsGPUModalOpen] = useState(false);
-  const [geometryStats, setGeometryStats] = useState({ totalVertices: 48000, totalTriangles: 96000 });
+  const [geometryStats, setGeometryStats] = useState({ totalVertices: 120000, totalTriangles: 240000 });
 
   // Collapsible drawers (Closed by default for clean distraction-free 3D viewing!)
   const [showDiagnosticsDrawer, setShowDiagnosticsDrawer] = useState(false);
@@ -142,6 +142,7 @@ export default function App() {
         <div style={{ width: '100%', height: '100%', position: 'relative' }}>
           <AnatomyViewer
             postureParams={postureParams}
+            onParamChange={handleParamChange}
             overactiveMuscles={activeOveractiveMuscles}
             underactiveMuscles={activeUnderactiveMuscles}
             displayMode={displayMode}
