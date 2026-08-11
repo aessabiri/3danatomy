@@ -7,7 +7,7 @@ import { BiomechanicalVisualOverlays } from './BiomechanicalVisualOverlays';
 
 /**
  * Universal Medical Musculoskeletal Kinematic Rig
- * Uses matched pair: skeleton.glb + fullbody.glb, scaled and aligned with medical precision.
+ * Integrates LUMC Clinical Scans with exact midline sagittal alignment (x = 0).
  */
 export class MedicalKinematicRig {
   constructor(scene, onProgress, onComplete) {
@@ -19,21 +19,21 @@ export class MedicalKinematicRig {
     this.root.name = 'MedicalKinematicSystem';
     this.scene.add(this.root);
 
-    // Master Human Group (holds both skeleton and muscles with unified scale)
-    this.humanGroup = new THREE.Group();
-    this.humanGroup.name = 'HumanAnatomyGroup';
-    this.root.add(this.humanGroup);
-
-    this.skeletonScene = null;
-    this.muscleScene = null;
+    this.layerSkeletal = new THREE.Group();
+    this.layerSkeletal.name = 'Layer_Skeletal';
+    this.root.add(this.layerSkeletal);
 
     this.layerLigaments = new THREE.Group();
     this.layerLigaments.name = 'Layer_Ligaments';
-    this.humanGroup.add(this.layerLigaments);
+    this.root.add(this.layerLigaments);
+
+    this.layerMuscles = new THREE.Group();
+    this.layerMuscles.name = 'Layer_Muscles';
+    this.root.add(this.layerMuscles);
 
     this.layerNerves = new THREE.Group();
     this.layerNerves.name = 'Layer_Nerves';
-    this.humanGroup.add(this.layerNerves);
+    this.root.add(this.layerNerves);
 
     this.materials = createMedicalMaterials();
     this.overlays = new BiomechanicalVisualOverlays(this.scene);
@@ -52,7 +52,6 @@ export class MedicalKinematicRig {
       nerves: true,
     };
 
-    // Clinical Range of Motion Limits (in radians)
     this.romLimits = {
       pelvisTilt: { min: -0.44, max: 0.35 },        // -25° to +20°
       pelvisDrop: { min: -0.26, max: 0.26 },        // -15° to +15°
@@ -78,16 +77,17 @@ export class MedicalKinematicRig {
     loader.setDRACOLoader(dracoLoader);
 
     try {
-      this.onProgress && this.onProgress(20, 'Loading Complete Clinical Skeleton...');
-      const skeletonGltf = await this.loadGLTF(loader, '/models/skeleton.glb');
+      this.onProgress && this.onProgress(20, 'Loading LUMC Clinical Skeleton Scan...');
+      const skeletonGltf = await this.loadGLTF(loader, '/models/lumc_skeleton.glb');
 
-      this.onProgress && this.onProgress(60, 'Loading Matched Muscular Anatomy...');
+      this.onProgress && this.onProgress(50, 'Loading Full-Body Striated Musculature...');
       const muscleGltf = await this.loadGLTF(loader, '/models/fullbody.glb');
 
-      this.onProgress && this.onProgress(85, 'Aligning Anatomy & Constructing Kinematics...');
-      this.assembleMatchedAtlas(skeletonGltf.scene, muscleGltf.scene);
-      this.buildLigamentsAndTendons();
-      this.buildNervousSystem();
+      this.onProgress && this.onProgress(75, 'Loading LUMC Tendons, Ligaments & Nerves...');
+      const lowerLimbGltf = await this.loadGLTF(loader, '/models/lumc_lower_limb.glb');
+
+      this.onProgress && this.onProgress(90, 'Aligning Anatomy Along Midline...');
+      this.assembleClinicalAtlas(skeletonGltf.scene, muscleGltf.scene, lowerLimbGltf.scene);
 
       this.isReady = true;
       this.onProgress && this.onProgress(100, 'Ready');
@@ -103,39 +103,68 @@ export class MedicalKinematicRig {
     });
   }
 
-  assembleMatchedAtlas(skeletonScene, muscleScene) {
-    this.skeletonScene = skeletonScene;
-    this.muscleScene = muscleScene;
-
-    this.humanGroup.add(skeletonScene);
-    this.humanGroup.add(muscleScene);
-
-    // 1. Configure High-Definition Cortical Bone & Cartilage Materials
+  assembleClinicalAtlas(skeletonScene, muscleScene, lowerLimbScene) {
+    // 1. SKELETON LAYER (LUMC Scan)
     skeletonScene.traverse((child) => {
-      if (child.isMesh) {
+      if (child.isMesh && child.geometry) {
         child.castShadow = true;
         child.receiveShadow = true;
         const name = (child.name || '').toLowerCase();
-        if (name.includes('cart') || name.includes('disc') || name.includes('meniscus') || name.includes('septal')) {
+        if (name.includes('cart') || name.includes('disc') || name.includes('meniscus')) {
           child.material = this.materials.hyalineCartilage;
         } else {
           child.material = this.materials.corticalBone;
         }
-        this.registerInteractive(child, child.name.replace(/\.g|\.r|\.l/g, ''));
+        this.registerInteractive(child, child.name.replace(/\.r|\.l|\.g/g, ''));
       }
     });
 
-    // 2. Configure Striated Muscle Materials & Register Muscle Objects
+    // Bilateral mirrored limbs for skeleton (all lateral bones ending with .r)
+    const mirroredSkelLimbs = new THREE.Group();
+    mirroredSkelLimbs.name = 'MirroredLeftSkeleton';
+    mirroredSkelLimbs.scale.x = -1;
+
+    skeletonScene.traverse((child) => {
+      if (child.isMesh && child.geometry) {
+        const rawName = child.name || '';
+        if (rawName.endsWith('.r') || rawName.endsWith('.r.') || rawName.toLowerCase().includes('right')) {
+          const clone = new THREE.Mesh(child.geometry, child.material);
+          clone.position.copy(child.position);
+          clone.rotation.copy(child.rotation);
+          clone.scale.copy(child.scale);
+          clone.castShadow = true;
+          clone.receiveShadow = true;
+          mirroredSkelLimbs.add(clone);
+          this.registerInteractive(clone, `${rawName.replace(/\.r|\.l/g, '')}.l`);
+        }
+      }
+    });
+
+    const skeletonContainer = new THREE.Group();
+    skeletonContainer.name = 'SkeletonContainer';
+    skeletonContainer.add(skeletonScene);
+    skeletonContainer.add(mirroredSkelLimbs);
+
+    const skelBox = new THREE.Box3().setFromObject(skeletonContainer);
+    const skelSize = skelBox.getSize(new THREE.Vector3());
+    const skelScale = 1.75 / (skelSize.y > 0 ? skelSize.y : 1.75);
+
+    // Keep midline aligned on sagittal plane (x = 0, z = 0)
+    skeletonContainer.scale.set(skelScale, skelScale, skelScale);
+    skeletonContainer.position.set(0, -skelBox.min.y * skelScale, 0);
+    this.layerSkeletal.add(skeletonContainer);
+
+    // 2. MUSCLE LAYER (Fullbody Striated Musculature)
     this.muscleMeshes = [];
     muscleScene.traverse((child) => {
-      if (child.isMesh) {
+      if (child.isMesh && child.geometry) {
         child.castShadow = true;
         child.receiveShadow = true;
         child.material = this.materials.striatedMuscle.clone();
 
         const muscleObj = {
           id: child.name.toLowerCase().replace(/[^a-z0-9]/g, '_'),
-          name: child.name.replace(/\.g|\.r|\.l/g, ''),
+          name: child.name.replace(/\.r|\.l|\.g/g, ''),
           mesh: child,
           baseScale: child.scale.clone(),
         };
@@ -152,113 +181,114 @@ export class MedicalKinematicRig {
       }
     });
 
-    // 3. Normalize Model Scale to 1.75m standing human centered on ground
-    const box = new THREE.Box3().setFromObject(this.humanGroup);
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
+    const musBox = new THREE.Box3().setFromObject(muscleScene);
+    const musSize = musBox.getSize(new THREE.Vector3());
+    const musScale = 1.75 / (musSize.y > 0 ? musSize.y : 1.75);
 
-    const currentHeight = size.y > 0 ? size.y : 1.75;
-    const scaleFactor = 1.75 / currentHeight;
+    const muscleContainer = new THREE.Group();
+    muscleContainer.name = 'MuscleContainer';
+    muscleContainer.add(muscleScene);
+    muscleContainer.scale.set(musScale, musScale, musScale);
+    muscleContainer.position.set(0, -musBox.min.y * musScale, 0);
+    this.layerMuscles.add(muscleContainer);
 
-    this.humanGroup.scale.set(scaleFactor, scaleFactor, scaleFactor);
-    this.humanGroup.position.x = -center.x * scaleFactor;
-    this.humanGroup.position.z = -center.z * scaleFactor;
-    this.humanGroup.position.y = -box.min.y * scaleFactor;
+    // 3. TENDONS, LIGAMENTS & NERVES FROM LUMC LOWER LIMB SCAN
+    const tendonGroup = new THREE.Group();
+    tendonGroup.name = 'LUMCTendonsAndLigaments';
 
-    // 4. Cache Kinematic Bone Nodes from the Complete Skeleton
+    const nerveGroup = new THREE.Group();
+    nerveGroup.name = 'LUMCNerves';
+
+    lowerLimbScene.traverse((child) => {
+      if (child.isMesh && child.geometry) {
+        const name = (child.name || '').toLowerCase();
+
+        // Tendons & Ligaments & Retinacula
+        if (
+          name.includes('ligament') ||
+          name.includes('tendon') ||
+          name.includes('retinacul') ||
+          name.includes('sheath') ||
+          name.includes('fascia') ||
+          name.includes('bursa')
+        ) {
+          const mat = name.includes('bursa')
+            ? this.materials.hyalineCartilage
+            : this.materials.denseTendon;
+          const mesh = new THREE.Mesh(child.geometry, mat);
+          mesh.position.copy(child.position);
+          mesh.rotation.copy(child.rotation);
+          mesh.scale.copy(child.scale);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          tendonGroup.add(mesh);
+          this.registerInteractive(mesh, child.name.replace(/\.r|\.l/g, ''));
+        }
+
+        // Nerves & Plexuses
+        if (name.includes('nerve') || name.includes('plexus')) {
+          const mesh = new THREE.Mesh(child.geometry, this.materials.nerveMyelin);
+          mesh.position.copy(child.position);
+          mesh.rotation.copy(child.rotation);
+          mesh.scale.copy(child.scale);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          nerveGroup.add(mesh);
+          this.registerInteractive(mesh, child.name.replace(/\.r|\.l/g, ''));
+        }
+      }
+    });
+
+    // Bilateral Mirroring for Left Tendons and Nerves
+    const mirroredTendons = tendonGroup.clone();
+    mirroredTendons.scale.x = -1;
+    tendonGroup.add(mirroredTendons);
+
+    const mirroredNerves = nerveGroup.clone();
+    mirroredNerves.scale.x = -1;
+    nerveGroup.add(mirroredNerves);
+
+    tendonGroup.scale.set(skelScale, skelScale, skelScale);
+    tendonGroup.position.set(0, -skelBox.min.y * skelScale, 0);
+    this.layerLigaments.add(tendonGroup);
+
+    nerveGroup.scale.set(skelScale, skelScale, skelScale);
+    nerveGroup.position.set(0, -skelBox.min.y * skelScale, 0);
+    this.layerNerves.add(nerveGroup);
+
+    // Spinal Cord
+    const spinalCord = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.009, 0.62, 12), this.materials.nerveMyelin);
+    spinalCord.position.set(0, 1.25, -0.03);
+    this.layerNerves.add(spinalCord);
+    this.registerInteractive(spinalCord, 'Spinal Cord & Conus Medullaris');
+
+    // 4. Cache Kinematic Nodes
     this.nodes = {
-      rightFoot: [],
-      leftFoot: [],
+      pelvis: [],
       lumbar: [],
       thoracic: [],
       cervical: [],
-      pelvis: [],
+      rightFoot: [],
+      leftFoot: [],
     };
 
     skeletonScene.traverse((child) => {
       const name = (child.name || '').toLowerCase();
-      if (name.includes('femur.r')) this.nodes.rightFemur = child;
-      if (name.includes('femur.l')) this.nodes.leftFemur = child;
-      if (name.includes('tibia.r') || name.includes('fibula.r')) {
-        this.nodes.rightTibia = this.nodes.rightTibia || child;
-      }
-      if (name.includes('tibia.l') || name.includes('fibula.l')) {
-        this.nodes.leftTibia = this.nodes.leftTibia || child;
-      }
-      if (name.includes('talus.r') || name.includes('calcaneus.r') || name.includes('navicular bone.r') || name.includes('cuneiform bone.r') || name.includes('metatarsal bone.r')) {
-        this.nodes.rightFoot.push(child);
-      }
-      if (name.includes('talus.l') || name.includes('calcaneus.l') || name.includes('navicular bone.l') || name.includes('cuneiform bone.l') || name.includes('metatarsal bone.l')) {
-        this.nodes.leftFoot.push(child);
-      }
-      if (name.includes('vertebra l') || name.includes('lumbar')) {
-        this.nodes.lumbar.push(child);
-      }
-      if (name.includes('vertebra t') || name.includes('thoracic') || name.includes('rib')) {
-        this.nodes.thoracic.push(child);
-      }
-      if (name.includes('vertebra c') || name.includes('atlas') || name.includes('axis') || name.includes('cervical')) {
-        this.nodes.cervical.push(child);
-      }
+      if (name.includes('sacrum') || name.includes('hip bone')) this.nodes.pelvis.push(child);
+      if (name.includes('lumbar')) this.nodes.lumbar.push(child);
+      if (name.includes('thoracic') || name.includes('rib')) this.nodes.thoracic.push(child);
+      if (name.includes('cervical') || name.includes('atlas') || name.includes('axis')) this.nodes.cervical.push(child);
       if (name.includes('mandible')) this.nodes.mandible = child;
-      if (name.includes('hip bone') || name.includes('sacrum') || name.includes('coccyx')) {
-        this.nodes.pelvis.push(child);
-      }
+      if (name.includes('femur.r') || name.includes('femur')) this.nodes.rightFemur = child;
+      if (name.includes('tibia.r') || name.includes('tibia')) this.nodes.rightTibia = child;
+      if (name.includes('talus') || name.includes('calcaneus') || name.includes('navicular')) this.nodes.rightFoot.push(child);
     });
-  }
 
-  buildLigamentsAndTendons() {
-    const matTendon = this.materials.denseTendon;
-    const matLigament = this.materials.ligamentFascia;
-
-    [-1, 1].forEach((side) => {
-      const sideName = side === 1 ? 'Right' : 'Left';
-      const sideX = side * 0.08;
-
-      const plantarMesh = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.005, 0.14), matLigament);
-      plantarMesh.position.set(sideX, 0.025, 0.04);
-      this.layerLigaments.add(plantarMesh);
-      this.registerInteractive(plantarMesh, `${sideName} Plantar Fascia & Spring Ligament`);
-
-      const achillesMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.16, 8), matTendon);
-      achillesMesh.position.set(sideX, 0.14, -0.04);
-      this.layerLigaments.add(achillesMesh);
-      this.registerInteractive(achillesMesh, `${sideName} Achilles Tendon`);
-
-      const patellarMesh = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.075, 0.008), matTendon);
-      patellarMesh.position.set(sideX, 0.44, 0.035);
-      this.layerLigaments.add(patellarMesh);
-      this.registerInteractive(patellarMesh, `${sideName} Patellar Tendon`);
-
-      const itBandMesh = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.44, 0.04), matTendon);
-      itBandMesh.position.set(side * 0.14, 0.68, 0);
-      this.layerLigaments.add(itBandMesh);
-      this.registerInteractive(itBandMesh, `${sideName} Iliotibial (IT) Tract`);
-    });
-  }
-
-  buildNervousSystem() {
-    const matNerve = this.materials.nerveMyelin;
-
-    const spinalCord = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.010, 0.62, 8), matNerve);
-    spinalCord.position.set(0, 1.25, -0.03);
-    this.layerNerves.add(spinalCord);
-    this.registerInteractive(spinalCord, 'Spinal Cord & Lumbar Plexus');
-
-    [-1, 1].forEach((side) => {
-      const sideName = side === 1 ? 'Right' : 'Left';
-      const sideX = side * 0.07;
-
-      const sciatic = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.44, 6), matNerve);
-      sciatic.position.set(sideX, 0.66, -0.04);
-      this.layerNerves.add(sciatic);
-      this.registerInteractive(sciatic, `${sideName} Sciatic Nerve`);
-
-      const peroneal = new THREE.Mesh(new THREE.TorusGeometry(0.025, 0.004, 6, 12, Math.PI * 0.8), matNerve);
-      peroneal.rotation.set(Math.PI / 2, side * 0.3, 0);
-      peroneal.position.set(side * 0.11, 0.43, 0);
-      this.layerNerves.add(peroneal);
-      this.registerInteractive(peroneal, `${sideName} Common Peroneal Nerve (Entrapment Zone)`);
+    mirroredSkelLimbs.traverse((child) => {
+      const name = (child.name || '').toLowerCase();
+      if (name.includes('femur')) this.nodes.leftFemur = child;
+      if (name.includes('tibia')) this.nodes.leftTibia = child;
+      if (name.includes('talus') || name.includes('calcaneus')) this.nodes.leftFoot.push(child);
     });
   }
 
@@ -291,39 +321,39 @@ export class MedicalKinematicRig {
     const rightFootPronation = clamp(params.rightFootPronation, this.romLimits.rightFootPronation.min, this.romLimits.rightFootPronation.max);
     const leftFootPronation = clamp(params.leftFootPronation, this.romLimits.leftFootPronation.min, this.romLimits.leftFootPronation.max);
 
-    // 1. Pelvis Bones Real Articulation
+    // 1. Pelvis
     if (this.nodes.pelvis) {
-      this.nodes.pelvis.forEach((b) => {
-        b.rotation.x = pelvisTilt;
-        b.rotation.z = pelvisDrop;
-        b.rotation.y = pelvisRotation;
+      this.nodes.pelvis.forEach((node) => {
+        node.rotation.x = pelvisTilt;
+        node.rotation.z = pelvisDrop;
+        node.rotation.y = pelvisRotation;
       });
     }
 
-    // 2. Lumbar Spine (L1 -> L5)
+    // 2. Lumbar Spine
     if (this.nodes.lumbar) {
-      this.nodes.lumbar.forEach((vert, idx) => {
+      this.nodes.lumbar.forEach((node, idx) => {
         const frac = (idx + 1) / this.nodes.lumbar.length;
-        vert.rotation.x = -lumbarLordosis * frac * 0.35;
-        vert.rotation.z = -spinalLateralBend * frac * 0.3;
+        node.rotation.x = -lumbarLordosis * frac * 0.35;
+        node.rotation.z = -spinalLateralBend * frac * 0.35;
       });
     }
 
-    // 3. Thoracic Spine & Ribs
+    // 3. Thoracic Spine & Ribcage
     if (this.nodes.thoracic) {
-      this.nodes.thoracic.forEach((vert, idx) => {
+      this.nodes.thoracic.forEach((node, idx) => {
         const frac = (idx + 1) / this.nodes.thoracic.length;
-        vert.rotation.x = thoracicKyphosis * frac * 0.35;
-        vert.rotation.z = spinalLateralBend * (1 - frac) * 0.3;
+        node.rotation.x = thoracicKyphosis * frac * 0.35;
+        node.rotation.z = spinalLateralBend * (1 - frac) * 0.3;
       });
     }
 
-    // 4. Cervical Spine & Mandible
+    // 4. Cervical & Cranium
     if (this.nodes.cervical) {
-      this.nodes.cervical.forEach((vert, idx) => {
+      this.nodes.cervical.forEach((node, idx) => {
         const frac = (idx + 1) / this.nodes.cervical.length;
-        vert.rotation.x = -cervicalForwardHead * frac * 7.0;
-        vert.position.z = cervicalForwardHead * frac * 0.8;
+        node.rotation.x = -cervicalForwardHead * frac * 5.0;
+        node.position.z = cervicalForwardHead * frac * 0.6;
       });
     }
 
@@ -332,7 +362,7 @@ export class MedicalKinematicRig {
       this.nodes.mandible.position.y = -cervicalForwardHead * 0.3;
     }
 
-    // 5. Right Leg (Femur, Tibia, Foot)
+    // 5. Right Leg
     if (this.nodes.rightFemur) {
       this.nodes.rightFemur.rotation.z = rightKneeValgus * 0.4 - pelvisDrop;
       this.nodes.rightFemur.rotation.y = rightFootPronation * 0.3;
@@ -344,8 +374,8 @@ export class MedicalKinematicRig {
     }
 
     if (this.nodes.rightFoot) {
-      this.nodes.rightFoot.forEach((f) => {
-        f.rotation.z = rightFootPronation * 0.85;
+      this.nodes.rightFoot.forEach((node) => {
+        node.rotation.z = rightFootPronation * 0.85;
       });
     }
 
@@ -361,8 +391,8 @@ export class MedicalKinematicRig {
     }
 
     if (this.nodes.leftFoot) {
-      this.nodes.leftFoot.forEach((f) => {
-        f.rotation.z = -leftFootPronation * 0.85;
+      this.nodes.leftFoot.forEach((node) => {
+        node.rotation.z = -leftFootPronation * 0.85;
       });
     }
 
@@ -431,10 +461,10 @@ export class MedicalKinematicRig {
       this.layerVisibility[layerKey] = isVisible;
     }
 
-    if (layerKey === 'skeleton' && this.skeletonScene) this.skeletonScene.visible = isVisible;
+    if (layerKey === 'skeleton') this.layerSkeletal.visible = isVisible;
     if (layerKey === 'ligaments') this.layerLigaments.visible = isVisible;
-    if (layerKey === 'muscles' && this.muscleScene) {
-      this.muscleScene.visible = isVisible;
+    if (layerKey === 'muscles') {
+      this.layerMuscles.visible = isVisible;
       this.muscleMeshes.forEach((m) => {
         m.mesh.visible = isVisible && !this.hiddenMuscles.has(m.id);
       });

@@ -447,20 +447,20 @@ export default function AnatomyViewer({
       camera.position.set(0, 0.90, 3.6);
       controls.target.set(0, 0.90, 0);
     } else if (viewName === 'side') {
-      camera.position.set(3.2, 0.90, 0.2);
+      camera.position.set(3.2, 0.90, 0.0);
       controls.target.set(0, 0.90, 0);
     } else if (viewName === 'pelvis') {
-      camera.position.set(0, 0.92, 1.3);
+      camera.position.set(0, 0.92, 1.2);
       controls.target.set(0, 0.92, 0);
     } else if (viewName === 'right_knee') {
-      camera.position.set(0.25, 0.45, 1.1);
+      camera.position.set(-0.076, 0.434, 0.9);
       controls.target.set(-0.076, 0.434, 0);
     } else if (viewName === 'right_foot') {
-      camera.position.set(0.2, 0.15, 0.8);
-      controls.target.set(-0.076, 0.08, 0);
+      camera.position.set(-0.076, 0.12, 0.6);
+      controls.target.set(-0.076, 0.06, 0);
     } else if (viewName === 'spine') {
-      camera.position.set(0, 1.25, 1.4);
-      controls.target.set(0, 1.25, 0);
+      camera.position.set(0, 1.22, 1.2);
+      controls.target.set(0, 1.22, 0);
     }
     controls.update();
   };
