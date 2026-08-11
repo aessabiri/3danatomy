@@ -8,11 +8,13 @@ import AnatomyInspector from './components/UI/AnatomyInspector';
 import AyoubJourneyPlayer from './components/UI/AyoubJourneyPlayer';
 import GPUPerformanceControl from './components/UI/GPUPerformanceControl';
 import { POSTURE_CONDITIONS } from './data/postureConditions';
+import { KineticChainSolver } from './utils/KineticChainSolver';
 import { Sliders, Activity, X } from 'lucide-react';
 
 export default function App() {
   const [selectedConditionId, setSelectedConditionId] = useState('ayoub_case');
   const [postureParams, setPostureParams] = useState(POSTURE_CONDITIONS.ayoub_case.parameters);
+  const [kineticMode, setKineticMode] = useState('foot_ascending'); // 'foot_ascending' | 'pelvis_rooted' | 'manual'
   const [displayMode, setDisplayMode] = useState('all');
   const [showPlumbLine, setShowPlumbLine] = useState(true);
   const [cameraView, setCameraView] = useState('front');
@@ -65,10 +67,19 @@ export default function App() {
   };
 
   const handleParamChange = (paramKey, value) => {
-    setPostureParams((prev) => ({
-      ...prev,
-      [paramKey]: value,
-    }));
+    setPostureParams((prev) => {
+      const updated = { ...prev, [paramKey]: value };
+
+      if (kineticMode === 'foot_ascending' && paramKey === 'rightFootPronation') {
+        return KineticChainSolver.solveKineticChain(updated, 'foot_ascending');
+      }
+
+      if (kineticMode === 'pelvis_rooted' && (paramKey === 'pelvisDrop' || paramKey === 'pelvisTilt')) {
+        return KineticChainSolver.solveKineticChain(updated, 'pelvis_rooted');
+      }
+
+      return updated;
+    });
   };
 
   const handleResetPosture = () => {
@@ -191,7 +202,7 @@ export default function App() {
           }}
         >
           <Sliders size={13} color="var(--accent-cyan)" />
-          <span>{showDiagnosticsDrawer ? 'Hide Sliders' : 'Manual Sliders'}</span>
+          <span>{showDiagnosticsDrawer ? 'Hide Sliders' : 'Kinetic Sliders'}</span>
         </button>
 
         {/* Floating Toggle: Right Muscle Imbalances */}
@@ -236,6 +247,8 @@ export default function App() {
               postureParams={postureParams}
               onParamChange={handleParamChange}
               onResetPosture={handleResetPosture}
+              kineticMode={kineticMode}
+              onKineticModeChange={setKineticMode}
             />
           </div>
         )}
@@ -262,6 +275,7 @@ export default function App() {
                 overactiveMuscles: ayoubStageData.overactive,
                 underactiveMuscles: ayoubStageData.underactive,
               } : activeCondition}
+              postureParams={postureParams}
               onSelectMuscle={handleSelectMuscle}
             />
           </div>

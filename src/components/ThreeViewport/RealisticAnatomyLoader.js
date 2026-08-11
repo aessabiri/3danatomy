@@ -4,11 +4,12 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { createMedicalMaterials } from './MedicalMaterials';
 import { BiomechanicalVisualOverlays } from './BiomechanicalVisualOverlays';
 import { GeometryOptimizer } from '../../utils/GeometryOptimizer';
+import { KineticChainSolver } from '../../utils/KineticChainSolver';
 
 /**
- * Universal Musculoskeletal 3D Kinematics Engine
- * Supports Z-Anatomy Full Atlas, LUMC Clinical Skeleton (3.2MB) with Complete Left/Right Mirroring,
- * and LUMC Lower-Limb & Foot Joint Deep-Dive.
+ * Universal Musculoskeletal 3D Kinematics & Dynamic Muscle Reaction Engine
+ * Supports Z-Anatomy Full Musculoskeletal Atlas, LUMC Clinical Skeleton (3.2MB) with Bilateral Mirroring,
+ * and LUMC Lower-Limb & Foot Joint Deep-Dive with closed/open kinetic chain propagation.
  */
 export class RealisticAnatomyEngine {
   constructor(scene, onProgress, onComplete, modelType = 'full_atlas') {
@@ -24,7 +25,7 @@ export class RealisticAnatomyEngine {
     // Anatomical Materials
     this.materials = createMedicalMaterials();
 
-    // Biomechanical Visual Vector & Laser Overlay System
+    // Biomechanical Visual Vector, Cable & Kinetic Wave Overlay System
     this.overlays = new BiomechanicalVisualOverlays(this.scene);
 
     // Geometry Optimizer for Vertex Decimation & Integrated GPU Acceleration
@@ -91,12 +92,12 @@ export class RealisticAnatomyEngine {
 
       if (this.cachedPostureParams) {
         this.updatePosture(this.cachedPostureParams);
+      } else {
+        const initialCalculations = KineticChainSolver.calculateMuscleStrains({});
+        this.updateMuscleHeatmap(initialCalculations.overactive, initialCalculations.underactive);
       }
-      if (this.cachedOveractiveList.length || this.cachedUnderactiveList.length) {
-        this.updateMuscleHeatmap(this.cachedOveractiveList, this.cachedUnderactiveList);
-      }
-      this.setDisplayMode(this.displayMode);
 
+      this.setDisplayMode(this.displayMode);
       this.onProgress && this.onProgress(100, 'Ready');
       if (this.onComplete) this.onComplete(this);
     } catch (err) {
@@ -133,7 +134,7 @@ export class RealisticAnatomyEngine {
         }
         let key = this.categorizeAnatomyKey(child.name);
         this.boneMeshes.push(child);
-        this.optimizer.registerMesh(child); // Tracks UUID across left/right shared geometries
+        this.optimizer.registerMesh(child);
         this.registerInteractive(child, key, child.name.replace(/\.g|\.r|\.l/g, ''));
       }
     });
@@ -169,20 +170,19 @@ export class RealisticAnatomyEngine {
     this.root.add(humanGroup);
     this.humanGroup = humanGroup;
 
-    // SKELETAL MIRRORING: Clone right limb & ribcage groups to generate full bilateral anatomy
+    // Bilateral mirroring of right side limbs and cartilages
     const mirrorGroup = (rightGroupName, leftGroupName) => {
       const rightGroup = skeletonScene.getObjectByName(rightGroupName);
       if (rightGroup) {
         const leftGroup = rightGroup.clone(true);
         leftGroup.name = leftGroupName;
-        leftGroup.scale.x = -leftGroup.scale.x; // Mirror across sagittal plane
+        leftGroup.scale.x = -leftGroup.scale.x;
 
         leftGroup.traverse((child) => {
           if (child.name) {
             child.name = child.name.replace(/\.r$/g, '.l').replace(/\.r\./g, '.l.').replace(/_right/g, '_left');
           }
           if (child.isMesh) {
-            // Clone geometry to ensure independent normal winding
             child.geometry = child.geometry.clone();
           }
         });
@@ -324,6 +324,7 @@ export class RealisticAnatomyEngine {
     reg('skelLeftCalcaneus', skeletonScene.getObjectByName('Calcaneus.l'));
     reg('skelLeftNavicular', skeletonScene.getObjectByName('Medial cuneiform bone.l'));
 
+    // Dynamic Muscle Mesh Groups
     reg('muscDorsal', fullbodyScene.getObjectByName('Dorsal part of muscular system.g'));
     reg('muscThorax', fullbodyScene.getObjectByName('Thoracic part of muscular system.g'));
     reg('muscAbs', fullbodyScene.getObjectByName('Abdominal part of muscular system.g'));
@@ -338,11 +339,9 @@ export class RealisticAnatomyEngine {
       this.nodes[key] = { obj, basePos: obj.position.clone(), baseQuat: obj.quaternion.clone(), baseScale: obj.scale.clone() };
     };
 
-    // Mandible & Head
     reg('skelMandible', scene.getObjectByName('Mandible bone'));
     reg('skelHead', scene.getObjectByName('Occipital bone') || scene.getObjectByName('Frontal bone'));
 
-    // Pelvis & Spine
     reg('skelPelvisRight', scene.getObjectByName('Hip bone.r'));
     reg('skelPelvisLeft', scene.getObjectByName('Hip bone.l'));
     reg('skelSacrum', scene.getObjectByName('Sacrum'));
@@ -350,7 +349,6 @@ export class RealisticAnatomyEngine {
     reg('skelThoracic', scene.getObjectByName('Thoracic vertebrae (T6)') || scene.getObjectByName('Thoracic vertebrae (T1)'));
     reg('skelCervical', scene.getObjectByName('Cervical vertebrae (C5)') || scene.getObjectByName('Atlas (C1)'));
 
-    // Right Limbs
     reg('skelRightFemur', scene.getObjectByName('Femur.r'));
     reg('skelRightTibia', scene.getObjectByName('Tibia.r'));
     reg('skelRightFibula', scene.getObjectByName('Fibula.r'));
@@ -360,7 +358,6 @@ export class RealisticAnatomyEngine {
     reg('skelRightNavicular', scene.getObjectByName('Navicular bone.r') || scene.getObjectByName('Medial cuneiform bone.r'));
     reg('skelRightFoot', scene.getObjectByName('First metatarsal bone.r') || scene.getObjectByName('Calcaneus.r'));
 
-    // Left Limbs (Mirrored)
     reg('skelLeftFemur', scene.getObjectByName('Femur.l'));
     reg('skelLeftTibia', scene.getObjectByName('Tibia.l'));
     reg('skelLeftFibula', scene.getObjectByName('Fibula.l'));
@@ -421,7 +418,7 @@ export class RealisticAnatomyEngine {
   }
 
   // =========================================================================
-  // 6. TRUE 3D WORLD-SPACE KINEMATICS (BILATERAL SYMMETRIC SUPPORT)
+  // 6. TRUE 3D WORLD-SPACE CLOSED-CHAIN KINEMATICS & DYNAMIC MUSCLE DEFORMATION
   // =========================================================================
   updatePosture(params = {}) {
     this.cachedPostureParams = params;
@@ -443,7 +440,7 @@ export class RealisticAnatomyEngine {
       rightShoulderProtraction = 0,
     } = params;
 
-    const applyWorldTransform = (nodeKey, { pitch = 0, yaw = 0, roll = 0 }, posOffset = null) => {
+    const applyWorldTransform = (nodeKey, { pitch = 0, yaw = 0, roll = 0 }, posOffset = null, scaleMod = null) => {
       const n = this.nodes[nodeKey];
       if (!n || !n.obj) return;
       n.obj.quaternion.copy(n.baseQuat);
@@ -457,55 +454,66 @@ export class RealisticAnatomyEngine {
         n.obj.position.y += posOffset[1];
         n.obj.position.z += posOffset[2];
       }
+
+      n.obj.scale.copy(n.baseScale);
+      if (scaleMod) {
+        n.obj.scale.x *= scaleMod[0];
+        n.obj.scale.y *= scaleMod[1];
+        n.obj.scale.z *= scaleMod[2];
+      }
     };
 
-    // 1. PELVIS TILT & DROPPED HIP (Full Atlas & LUMC Skeleton)
+    // 1. PELVIS TILT & DROPPED HIP (Bilateral Skeletal & Muscle Reaction)
     applyWorldTransform('skelPelvis', { pitch: pelvisTilt * 1.2, yaw: pelvisRotation * 0.8, roll: pelvisDrop * 1.5 }, [0, -Math.abs(pelvisDrop) * 2.0, 0]);
-    applyWorldTransform('muscGlutes', { pitch: pelvisTilt * 1.2, yaw: pelvisRotation * 0.8, roll: pelvisDrop * 1.5 }, [0, -Math.abs(pelvisDrop) * 2.0, 0]);
+    // Gluteal muscles dynamically stretch/shear with pelvic obliquity
+    applyWorldTransform('muscGlutes', { pitch: pelvisTilt * 1.2, yaw: pelvisRotation * 0.8, roll: pelvisDrop * 1.5 }, [0, -Math.abs(pelvisDrop) * 2.0, 0], [1 + Math.abs(pelvisDrop) * 0.15, 1 - Math.abs(pelvisTilt) * 0.1, 1]);
 
     // LUMC Specific Pelvis Nodes
     applyWorldTransform('skelPelvisRight', { pitch: pelvisTilt * 1.2, yaw: pelvisRotation * 0.8, roll: pelvisDrop * 1.5 }, [0, -pelvisDrop * 2.5, 0]);
     applyWorldTransform('skelPelvisLeft', { pitch: pelvisTilt * 1.2, yaw: pelvisRotation * 0.8, roll: pelvisDrop * 1.5 }, [0, pelvisDrop * 2.5, 0]);
     applyWorldTransform('skelSacrum', { pitch: pelvisTilt * 1.2, yaw: pelvisRotation * 0.8, roll: pelvisDrop * 0.8 });
 
-    // 2. LUMBAR SPINE
+    // 2. LUMBAR SPINE & ABDOMINAL WALL
     applyWorldTransform('skelLumbar', { pitch: -lumbarLordosis * 1.2, yaw: -pelvisRotation * 0.5, roll: -spinalLateralBend * 1.2 });
-    applyWorldTransform('muscAbs', { pitch: -lumbarLordosis * 0.8, yaw: -pelvisRotation * 0.3, roll: -spinalLateralBend * 0.8 });
+    applyWorldTransform('muscAbs', { pitch: -lumbarLordosis * 0.8, yaw: -pelvisRotation * 0.3, roll: -spinalLateralBend * 0.8 }, [0, 0, 0], [1, 1 + Math.abs(lumbarLordosis) * 0.2, 1]);
 
-    // 3. THORACIC SPINE KYPHOSIS
+    // 3. THORACIC SPINE KYPHOSIS & RIB CAGE
     applyWorldTransform('skelThoracic', { pitch: thoracicKyphosis * 1.4, yaw: 0, roll: spinalLateralBend * 0.8 });
     applyWorldTransform('skelRibs', { pitch: thoracicKyphosis * 1.2, yaw: 0, roll: spinalLateralBend * 0.6 });
-    applyWorldTransform('muscThorax', { pitch: thoracicKyphosis * 1.2, yaw: 0, roll: spinalLateralBend * 0.6 });
-    applyWorldTransform('muscDorsal', { pitch: thoracicKyphosis * 1.3, yaw: 0, roll: spinalLateralBend * 0.8 });
+    applyWorldTransform('muscThorax', { pitch: thoracicKyphosis * 1.2, yaw: 0, roll: spinalLateralBend * 0.6 }, [0, 0, 0], [1, 1 - thoracicKyphosis * 0.15, 1]);
+    applyWorldTransform('muscDorsal', { pitch: thoracicKyphosis * 1.3, yaw: 0, roll: spinalLateralBend * 0.8 }, [0, 0, 0], [1, 1 + thoracicKyphosis * 0.25, 1]);
 
-    // 4. CERVICAL & FORWARD HEAD
+    // 4. CERVICAL & FORWARD HEAD POSTURE
     applyWorldTransform('skelCervical', { pitch: -cervicalForwardHead * 1.1, yaw: 0, roll: 0 }, [0, 0, cervicalForwardHead * 18]);
     applyWorldTransform('skelHead', { pitch: cervicalForwardHead * 0.6, yaw: 0, roll: 0 }, [0, -cervicalForwardHead * 2, cervicalForwardHead * 22]);
     applyWorldTransform('skelFace', { pitch: cervicalForwardHead * 0.6, yaw: 0, roll: 0 }, [0, -cervicalForwardHead * 2, cervicalForwardHead * 22]);
 
-    // 5. MANDIBLE (JAW RETRACTION)
+    // 5. MANDIBLE (JAW RETRACTION & MECHANICAL TRACTION)
     if (cervicalForwardHead > 0.05) {
       applyWorldTransform('skelMandible', { pitch: cervicalForwardHead * 0.4, yaw: 0, roll: 0 }, [0, -cervicalForwardHead * 8.0, -cervicalForwardHead * 9.0 + cervicalForwardHead * 22]);
     } else {
       applyWorldTransform('skelMandible', { pitch: 0, yaw: 0, roll: 0 });
     }
 
-    // 6. SHOULDERS
+    // 6. SHOULDER GIRDLE & ARMS
     applyWorldTransform('skelUpperLimbs', { pitch: (rightShoulderProtraction + leftShoulderProtraction) * 0.6, yaw: (rightShoulderProtraction - leftShoulderProtraction) * 0.5, roll: 0 });
     applyWorldTransform('muscUpperLimbs', { pitch: (rightShoulderProtraction + leftShoulderProtraction) * 0.6, yaw: (rightShoulderProtraction - leftShoulderProtraction) * 0.5, roll: 0 });
 
-    // 7. RIGHT TIBIAL TORSION & RIGHT KNEE VALGUS
+    // 7. LOWER LIMB MUSCULATURE DYNAMIC DEFORMATION
+    applyWorldTransform('muscLowerLimbs', { pitch: 0, yaw: -rightFootPronation * 0.5, roll: rightKneeValgus * 0.6 }, [-rightKneeValgus * 0.6, -Math.abs(pelvisDrop) * 1.2, 0]);
+
+    // 8. RIGHT TIBIAL TORSION & RIGHT KNEE VALGUS
     applyWorldTransform('skelRightTibia', { pitch: 0, yaw: -rightFootPronation * 1.5, roll: rightKneeValgus * 1.2 }, [-rightKneeValgus * 1.2, 0, 0]);
     applyWorldTransform('skelRightFibula', { pitch: 0, yaw: -rightFootPronation * 1.5, roll: rightKneeValgus * 1.2 }, [-rightKneeValgus * 1.2, 0, 0]);
     applyWorldTransform('skelRightFemur', { pitch: 0, yaw: rightFootPronation * 0.6, roll: -rightKneeValgus * 1.0 });
 
-    // 8. RIGHT FOOT ARCH DROP (PES PLANUS)
+    // 9. RIGHT FOOT ARCH DROP (PES PLANUS)
     applyWorldTransform('skelRightTalus', { pitch: 0, yaw: -rightFootPronation * 1.6, roll: rightFootPronation * 1.4 }, [rightFootPronation * 0.8, -rightFootPronation * 1.2, 0]);
     applyWorldTransform('skelRightCalcaneus', { pitch: 0, yaw: -rightFootPronation * 1.6, roll: rightFootPronation * 1.4 }, [rightFootPronation * 0.8, -rightFootPronation * 1.2, 0]);
     applyWorldTransform('skelRightNavicular', { pitch: 0, yaw: -rightFootPronation * 1.4, roll: rightFootPronation * 1.5 }, [rightFootPronation * 1.2, -rightFootPronation * 2.8, 0]);
     applyWorldTransform('skelRightFoot', { pitch: 0, yaw: -rightFootPronation * 1.4, roll: rightFootPronation * 1.2 });
 
-    // 9. LEFT KNEE & LEFT FOOT
+    // 10. LEFT KNEE & LEFT FOOT
     applyWorldTransform('skelLeftTibia', { pitch: 0, yaw: leftFootPronation * 1.5, roll: -leftKneeValgus * 1.2 }, [leftKneeValgus * 1.2, 0, 0]);
     applyWorldTransform('skelLeftFibula', { pitch: 0, yaw: leftFootPronation * 1.5, roll: -leftKneeValgus * 1.2 }, [leftKneeValgus * 1.2, 0, 0]);
     applyWorldTransform('skelLeftFemur', { pitch: 0, yaw: -leftFootPronation * 0.6, roll: leftKneeValgus * 1.0 });
@@ -516,13 +524,17 @@ export class RealisticAnatomyEngine {
 
     applyWorldTransform('skelFeet', { pitch: 0, yaw: -rightFootPronation * 0.8, roll: rightFootPronation * 0.6 });
 
+    // Compute dynamic muscle strain automatically and update muscle shading
+    const { overactive, underactive } = KineticChainSolver.calculateMuscleStrains(params);
+    this.updateMuscleHeatmap(overactive, underactive);
+
     if (this.overlays) {
       this.overlays.update(params);
     }
   }
 
   // =========================================================================
-  // 7. MUSCLE HEATMAP
+  // 7. REAL-TIME MUSCLE STRAIN HEATMAP & MATERIAL SHADING
   // =========================================================================
   updateMuscleHeatmap(overactiveList = [], underactiveList = []) {
     this.cachedOveractiveList = overactiveList;

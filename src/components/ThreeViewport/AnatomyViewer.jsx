@@ -194,8 +194,13 @@ export default function AnatomyViewer({
     renderer.domElement.addEventListener('click', handleClick);
 
     // ANIMATION LOOP
+    const clock = new THREE.Clock();
     const animate = () => {
       animationFrameRef.current = requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      if (engine.overlays && engine.cachedPostureParams) {
+        engine.overlays.update(engine.cachedPostureParams, delta);
+      }
       controls.update();
       renderer.render(scene, camera);
     };
@@ -542,11 +547,26 @@ export default function AnatomyViewer({
         </button>
       </div>
 
+      {/* Live Biomechanical Telemetry HUD (Collapsible Pill) */}
+      <div style={{ position: 'absolute', top: '16px', left: '16px', zIndex: 20 }}>
+        <BiomechanicalAnalysisHUD
+          postureParams={postureParams}
+          showVectors={showVectors}
+          onToggleVectors={() => {
+            const next = !showVectors;
+            setShowVectors(next);
+            if (engineRef.current && engineRef.current.overlays) {
+              engineRef.current.overlays.setVisible(next);
+            }
+          }}
+        />
+      </div>
+
       {/* Anatomy Interaction Hint */}
       <div
         style={{
           position: 'absolute',
-          top: '16px',
+          bottom: '56px',
           left: '16px',
           pointerEvents: 'none',
           display: 'flex',
@@ -559,6 +579,7 @@ export default function AnatomyViewer({
           padding: '4px 10px',
           borderRadius: 'var(--radius-full)',
           border: '1px solid var(--border-subtle)',
+          zIndex: 15,
         }}
       >
         <Info size={13} color="var(--accent-cyan)" />
